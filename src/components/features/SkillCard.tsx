@@ -1,4 +1,4 @@
-import { Download, RefreshCw, Box, Info, Trash2 } from "lucide-react";
+import { RefreshCw, Box, Info, Trash2 } from "lucide-react";
 import { cn } from "../../lib/utils";
 
 // Simplified Skill interface for group instances
