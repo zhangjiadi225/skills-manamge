@@ -1,4 +1,4 @@
-import { RotateCw, Download } from "lucide-react";
+import { RotateCw, Download, Trash2 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store/app-store";
@@ -9,17 +9,25 @@ import { SkillCard, type Skill } from "../components/features/SkillCard";
 
 export default function Discover() {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const [loading, setLoading] = useState(false);
     const [installing, setInstalling] = useState<string | null>(null);
     const [skills, setSkills] = useState<Skill[]>([]);
 
     const { installConfig } = useAppStore();
 
     const [selectedAgent, setSelectedAgent] = useState<string>("All");
+    const [selectedSkills, setSelectedSkills] = useState<Set<string>>(new Set());
 
-    useEffect(() => {
+    const loadSkills = () => {
+        setLoading(true);
         invoke<Skill[]>("get_local_skills")
             .then(setSkills)
-            .catch(console.error);
+            .catch(console.error)
+            .finally(() => setLoading(false));
+    };
+
+    useEffect(() => {
+        loadSkills();
     }, []);
 
     // Smart Filtering: Get unique agents from fetched skills
@@ -81,32 +89,133 @@ export default function Discover() {
     const handleUninstall = (id: string, skillAgents: string[]) => {
         // Determine targets based on view
         let targetAgents: string[] = [];
+        let isGlobal = false;
+
         if (selectedAgent === "All") {
-            // In "All" view, delete from ALL agents that have this skill
-            targetAgents = skillAgents;
+            // In "All" view, delete from ALL agents including global
+            targetAgents = skillAgents.filter(a => a !== "global");
+            isGlobal = skillAgents.includes("global");
+        } else if (selectedAgent === "global") {
+            // In global view, it's just global
+            isGlobal = true;
+            targetAgents = [];
         } else {
             // In specific agent view, delete ONLY from that agent
             targetAgents = [selectedAgent];
+            isGlobal = false;
         }
 
-        if (targetAgents.length === 0) return;
+        const agentDisplay = [
+            isGlobal ? "global" : null,
+            ...targetAgents
+        ].filter(Boolean).join(", ");
 
-        if (!confirm(`Are you sure you want to uninstall "${id}" from ${targetAgents.join(", ")}?`)) {
+        if (!confirm(`确定要卸载 "${id}" 从 ${agentDisplay} 吗?`)) {
             return;
         }
 
-        invoke("uninstall_skill", {
-            id,
-            agents: targetAgents
+        invoke("remove_skills", {
+            skillIds: [id],
+            global: isGlobal,
+            agents: targetAgents,
+            removeAll: false,
+            autoConfirm: installConfig.autoConfirm
         })
             .then(() => {
                 console.log("Uninstalled!");
                 // Refresh list
-                return invoke<Skill[]>("get_local_skills");
+                return loadSkills();
             })
-            .then(setSkills)
-            .catch(console.error);
-    }
+            .catch(err => {
+                console.error(err);
+                alert("卸载失败: " + err);
+            });
+    };
+
+    const handleExport = () => {
+        // Simple export of all unique skills with their sources
+        // Group by ID
+        const aggregated = skills.reduce((acc, skill) => {
+            if (!acc[skill.id]) {
+                acc[skill.id] = { id: skill.id, agents: new Set<string>(), source: skill.source };
+            }
+            if (skill.agent) acc[skill.id].agents.add(skill.agent);
+            return acc;
+        }, {} as Record<string, { id: string, agents: Set<string>, source?: string | null }>);
+
+        const data = {
+            exportedAt: new Date().toISOString(),
+            skills: Object.values(aggregated).map(s => ({
+                id: s.id,
+                agents: Array.from(s.agents),
+                source: s.source
+            }))
+        };
+
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `skills-export-${new Date().toISOString().split('T')[0]}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
+    const toggleSkillSelection = (id: string) => {
+        const newSelected = new Set(selectedSkills);
+        if (newSelected.has(id)) {
+            newSelected.delete(id);
+        } else {
+            newSelected.add(id);
+        }
+        setSelectedSkills(newSelected);
+    };
+
+    const toggleSelectAll = (ids: string[]) => {
+        if (selectedSkills.size === ids.length) {
+            setSelectedSkills(new Set());
+        } else {
+            setSelectedSkills(new Set(ids));
+        }
+    };
+
+    const handleBatchRemove = () => {
+        if (selectedSkills.size === 0) return;
+
+        const skillList = Array.from(selectedSkills);
+        if (!confirm(`确定要从当前视图中卸载选中的 ${skillList.length} 个技能吗?`)) {
+            return;
+        }
+
+        setLoading(true);
+        // We will process them one by one or construct a command that handles multiple with mixed global/local
+        // For simplicity and safety with the current backend command, we'll loop or handle the most common case.
+        // Actually, the new remove_skills command supports a list of IDs.
+        
+        // But we need to know if they are global.
+        // In "Global" view, they are all global.
+        // In "All" view, we'd need to check each one.
+        
+        const isGlobal = selectedAgent === "global";
+        const targetAgents = selectedAgent === "All" ? [] : [selectedAgent].filter(a => a !== "global");
+        
+        invoke("remove_skills", {
+            skillIds: skillList,
+            global: isGlobal,
+            agents: targetAgents,
+            removeAll: false,
+            autoConfirm: installConfig.autoConfirm
+        })
+            .then(() => {
+                setSelectedSkills(new Set());
+                return loadSkills();
+            })
+            .catch(err => {
+                console.error(err);
+                alert("批量删除失败: " + err);
+            })
+            .finally(() => setLoading(false));
+    };
 
     return (
         <div className="flex flex-col h-full bg-white">
@@ -135,10 +244,11 @@ export default function Discover() {
                         {installing === installInput ? "Installing..." : "Install"}
                     </button>
                     <button
-                        onClick={() => invoke<Skill[]>("get_local_skills").then(setSkills)}
+                        onClick={loadSkills}
+                        disabled={loading}
                         className="h-10 w-10 bg-white border border-slate-200 rounded-lg flex items-center justify-center text-slate-400 hover:text-blue-600 hover:border-blue-100 transition-all shadow-sm"
                     >
-                        <RotateCw size={18} />
+                        <RotateCw size={18} className={cn(loading && "animate-spin")} />
                     </button>
                 </div>
 
@@ -151,11 +261,21 @@ export default function Discover() {
                     </div>
                     {/* Right Actions */}
                     <div className="flex items-center gap-3">
+                        {selectedSkills.size > 0 && (
+                            <button
+                                onClick={handleBatchRemove}
+                                className="h-9 px-4 bg-red-50 border border-red-200 text-red-600 text-xs font-bold rounded-lg hover:bg-red-100 transition-all flex items-center gap-2 shadow-sm"
+                            >
+                                <Trash2 size={14} />
+                                批量卸载 ({selectedSkills.size})
+                            </button>
+                        )}
                         <button
-                            onClick={() => invoke<Skill[]>("get_local_skills").then(setSkills)}
-                            className="h-9 w-9 bg-white border border-slate-200 rounded-lg flex items-center justify-center text-slate-400 hover:text-blue-600 hover:border-blue-100 transition-all shadow-sm"
+                            onClick={handleExport}
+                            className="h-9 px-4 bg-white border border-slate-200 text-slate-600 text-xs font-bold rounded-lg hover:border-blue-200 hover:text-blue-600 transition-all flex items-center gap-2 shadow-sm"
                         >
-                            <RotateCw size={16} />
+                            <Download size={14} />
+                            批量导出
                         </button>
                     </div>
                 </div>
@@ -178,7 +298,7 @@ export default function Discover() {
                             key={agent}
                             onClick={() => setSelectedAgent(agent)}
                             className={cn(
-                                "px-3 py-1.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap border flex items-center gap-1.5",
+                                "px-3 py-1.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap border flex items-center gap-1.5 capitalize",
                                 selectedAgent === agent
                                     ? "bg-white text-blue-600 border-blue-200 shadow-sm"
                                     : "bg-white text-slate-500 border-slate-200 hover:border-slate-300"
@@ -194,6 +314,14 @@ export default function Discover() {
             {/* Table Header */}
             <div className="px-4 shrink-0">
                 <div className="bg-slate-50/80 rounded-t-xl border-x border-t border-slate-100 px-4 py-3 flex items-center text-xs font-bold text-slate-400 uppercase tracking-wider">
+                    <div className="w-12 flex justify-center shrink-0">
+                        <input
+                            type="checkbox"
+                            checked={groupedSkills.length > 0 && selectedSkills.size === groupedSkills.length}
+                            onChange={() => toggleSelectAll(groupedSkills.map(g => g.id))}
+                            className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                        />
+                    </div>
                     <div className="w-16 flex justify-center shrink-0">ICON</div>
                     <div className="w-[40%] shrink-0 pr-4">技能名称 / ID</div>
                     <div className="flex-1 shrink-0 pr-4">已安装 Agent</div>
@@ -211,6 +339,8 @@ export default function Discover() {
                             onInstall={handleInstall}
                             onUninstall={handleUninstall}
                             isInstalling={installing === group.id}
+                            onSelect={toggleSkillSelection}
+                            isSelected={selectedSkills.has(group.id)}
                         />
                     ))}
                 </div>

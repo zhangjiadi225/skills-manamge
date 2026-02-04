@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type View = 'discover' | 'library' | 'settings'
+export type View = 'discover' | 'library' | 'settings' | 'global'
 
 interface InstallConfig {
     installGlobal: boolean

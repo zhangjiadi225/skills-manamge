@@ -14,6 +14,7 @@ export interface Skill {
     downloads?: number;
     agent?: string;
     is_symlink?: boolean;
+    source?: string | null;
 }
 
 export interface SkillGroup {
@@ -29,9 +30,11 @@ interface SkillCardProps {
     onInstall: (id: string) => void;
     onUninstall: (id: string, agents: string[]) => void;
     isInstalling?: boolean;
+    onSelect?: (id: string) => void;
+    isSelected?: boolean;
 }
 
-export function SkillCard({ skillGroup, onInstall, onUninstall, isInstalling }: SkillCardProps) {
+export function SkillCard({ skillGroup, onInstall, onUninstall, isInstalling, onSelect, isSelected }: SkillCardProps) {
     // Sort instances: Symlinks first, then alphabetically by agent
     const sortedInstances = [...skillGroup.instances].sort((a, b) => {
         if (a.is_symlink && !b.is_symlink) return -1;
@@ -40,7 +43,19 @@ export function SkillCard({ skillGroup, onInstall, onUninstall, isInstalling }: 
     });
 
     return (
-        <div className="group flex items-center p-4 hover:bg-slate-50 border-b border-slate-100 last:border-0 transition-colors">
+        <div className={cn(
+            "group flex items-center p-4 hover:bg-slate-50 border-b border-slate-100 last:border-0 transition-colors",
+            isSelected && "bg-blue-50/50"
+        )}>
+            {/* Checkbox */}
+            <div className="w-12 flex justify-center shrink-0">
+                <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => onSelect?.(skillGroup.id)}
+                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                />
+            </div>
 
             {/* Icon/Avatar */}
             <div className="w-16 flex justify-center shrink-0">

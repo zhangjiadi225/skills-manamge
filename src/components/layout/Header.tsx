@@ -1,9 +1,9 @@
-import { Component, Settings } from "lucide-react";
+import { Settings, Search } from "lucide-react";
 import { useAppStore, type View } from "../../store/app-store";
 import { cn } from "../../lib/utils";
 
 const NAV_ITEMS: { id: View; label: string; icon?: React.ElementType }[] = [
-    { id: "library", label: "本地技能库", icon: Component },
+    { id: "discover", label: "技能库", icon: Search },
 ];
 
 export function Header() {
@@ -19,7 +19,7 @@ export function Header() {
 
             <nav className="flex items-center bg-white p-1.5 rounded-full shadow-sm border border-slate-200/50">
                 {NAV_ITEMS.map((item) => {
-                    const isActive = currentView === item.id || currentView === 'discover'; // Default to library/discover look
+                    const isActive = currentView === item.id;
                     return (
                         <button
                             key={item.id}
@@ -48,8 +48,6 @@ export function Header() {
                     设置
                 </button>
             </nav>
-
-
         </header>
     );
 }

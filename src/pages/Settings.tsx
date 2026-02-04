@@ -22,20 +22,22 @@ export default function Settings() {
                 if (!acc[skill.id]) {
                     acc[skill.id] = {
                         id: skill.id,
-                        agents: new Set<string>()
+                        agents: new Set<string>(),
+                        source: skill.source // Keep the skill source URL
                     };
                 }
                 if (skill.agent) {
                     acc[skill.id].agents.add(skill.agent);
                 }
                 return acc;
-            }, {} as Record<string, { id: string, agents: Set<string> }>);
+            }, {} as Record<string, { id: string, agents: Set<string>, source?: string | null }>);
 
             const exportData = {
                 exportedAt: new Date().toISOString(),
                 skills: Object.values(aggregated).map(s => ({
                     id: s.id,
-                    agents: Array.from(s.agents)
+                    agents: Array.from(s.agents),
+                    source: s.source
                 }))
             };
 
@@ -65,12 +67,35 @@ export default function Settings() {
                 current++;
                 setImportProgress(`Installing ${current}/${total}: ${skill.id}`);
 
-                const agents = skill.agents || installConfig.targetAgents;
+                const rawAgents = skill.agents || installConfig.targetAgents;
+                // Filter out 'global' from --agent flags as it's handled by --global flag
+                const agents = rawAgents.filter((a: string) => a !== 'global');
+                const isGlobal = rawAgents.includes('global') || installConfig.installGlobal;
+
+                // 解析安装来源和技能名称
+                // 优先使用 JSON 中的 source
+                let installId = skill.id;
+                let skillName = null;
+
+                if (skill.source) {
+                    installId = skill.source;
+                    skillName = skill.id;
+                } else {
+                    // 解析 ID 中的 --skill 参数 (旧版本兼容)
+                    const skillMatch = skill.id.match(/--skill\s+(\S+)/);
+                    if (skillMatch) {
+                        skillName = skillMatch[1];
+                        installId = skill.id.replace(/--skill\s+\S+/, "").trim();
+                    } else if (skill.skill) {
+                        skillName = skill.skill;
+                    }
+                }
 
                 try {
                     await invoke("install_skill", {
-                        id: skill.id,
-                        global: installConfig.installGlobal,
+                        id: installId,
+                        skill: skillName,
+                        global: isGlobal,
                         agents: agents,
                         autoConfirm: true,
                         installMode: installConfig.installMode
