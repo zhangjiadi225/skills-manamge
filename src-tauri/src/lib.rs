@@ -114,7 +114,7 @@ async fn install_skill(
     use std::process::{Command, Stdio};
 
     println!(
-        "Installing skill: {} (skill={:?}, mode={}) with global={}, agents={:?}, auto_confirm={}",
+        "[INSTALL] Starting installation: {} (skill={:?}, mode={}) with global={}, agents={:?}, auto_confirm={}",
         id, skill, install_mode, global, agents, auto_confirm
     );
 
@@ -122,50 +122,91 @@ async fn install_skill(
 
     // 添加 --skill 参数（如果指定）
     if let Some(ref skill_name) = skill {
+        println!("[INSTALL] Adding --skill flag: {}", skill_name);
         args.push("--skill".to_string());
         args.push(skill_name.clone());
     }
     if global {
+        println!("[INSTALL] Adding --global flag");
         args.push("--global".to_string());
     }
 
     // Add --agent flag for each selected agent
-    for agent in agents {
+    for agent in &agents {
+        println!("[INSTALL] Adding --agent flag: {}", agent);
         args.push("--agent".to_string());
-        args.push(agent);
+        args.push(agent.clone());
     }
 
     if auto_confirm {
+        println!("[INSTALL] Adding --yes flag");
         args.push("--yes".to_string());
     }
 
     // Convert to strict &str for Command
     let args_str: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    
+    println!("[INSTALL] Full command: npx {}", args.join(" "));
+    println!("[INSTALL] Spawning process...");
 
-    let mut child = Command::new("npx.cmd")
-        .args(&args_str)
+    // Windows 需要通过 cmd.exe 来执行 npx
+    let mut cmd = if cfg!(target_os = "windows") {
+        let mut c = Command::new("cmd");
+        c.args(&["/C", "npx"]);
+        c.args(&args_str);
+        c
+    } else {
+        let mut c = Command::new("npx");
+        c.args(&args_str);
+        c
+    };
+
+    let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to spawn npx: {}", e))?;
+        .map_err(|e| {
+            println!("[INSTALL] ERROR: Failed to spawn npx: {}", e);
+            format!("Failed to spawn npx: {}", e)
+        })?;
+
+    println!("[INSTALL] Process spawned successfully, PID: {:?}", child.id());
 
     {
         // Fallback input if flags don't cover everything
         if let Some(mut stdin) = child.stdin.take() {
+            println!("[INSTALL] Writing newline to stdin...");
             let _ = stdin.write_all(b"\n");
         }
     }
 
+    println!("[INSTALL] Waiting for process to complete...");
     let output = child
         .wait_with_output()
-        .map_err(|e| format!("Failed to read output: {}", e))?;
+        .map_err(|e| {
+            println!("[INSTALL] ERROR: Failed to read output: {}", e);
+            format!("Failed to read output: {}", e)
+        })?;
+
+    println!("[INSTALL] Process completed with status: {:?}", output.status);
+    
+    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    let stderr_str = String::from_utf8_lossy(&output.stderr);
+    
+    if !stdout_str.is_empty() {
+        println!("[INSTALL] STDOUT:\n{}", stdout_str);
+    }
+    if !stderr_str.is_empty() {
+        println!("[INSTALL] STDERR:\n{}", stderr_str);
+    }
 
     if output.status.success() {
+        println!("[INSTALL] SUCCESS: Installed {}", id);
         Ok(format!("Installed {}", id))
     } else {
-        let err_msg = String::from_utf8_lossy(&output.stderr);
-        Err(format!("Installation failed: {}", err_msg))
+        println!("[INSTALL] FAILED: Installation failed");
+        Err(format!("Installation failed: {}", stderr_str))
     }
 }
 
