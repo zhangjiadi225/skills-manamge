@@ -22,7 +22,7 @@ pub struct Skill {
 
 // Map of Agent Name -> Relative Path from Home
 const AGENT_PATHS: &[(&str, &str)] = &[
-    ("Antigravity", ".gemini/antigravity/global_skills"), // Adjusted based on user input
+    ("Antigravity", ".gemini/antigravity/skills"), // Adjusted based on user input
     ("Claude Code", ".claude/skills"),
     ("Cursor", ".cursor/skills"),
     ("Windsurf", ".codeium/windsurf/skills"),
@@ -104,6 +104,7 @@ fn get_local_skills() -> Result<Vec<Skill>, String> {
 #[tauri::command]
 async fn install_skill(
     id: String,
+    skill: Option<String>,
     global: bool,
     agents: Vec<String>,
     auto_confirm: bool,
@@ -113,11 +114,17 @@ async fn install_skill(
     use std::process::{Command, Stdio};
 
     println!(
-        "Installing skill: {} (mode={}) with global={}, agents={:?}, auto_confirm={}",
-        id, install_mode, global, agents, auto_confirm
+        "Installing skill: {} (skill={:?}, mode={}) with global={}, agents={:?}, auto_confirm={}",
+        id, skill, install_mode, global, agents, auto_confirm
     );
 
     let mut args = vec!["skills".to_string(), "add".to_string(), id.clone()];
+
+    // 添加 --skill 参数（如果指定）
+    if let Some(ref skill_name) = skill {
+        args.push("--skill".to_string());
+        args.push(skill_name.clone());
+    }
     if global {
         args.push("--global".to_string());
     }

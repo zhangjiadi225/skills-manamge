@@ -51,8 +51,14 @@ export default function Discover() {
         if (!source) return;
         setInstalling(source);
 
+        // 解析 --skill 参数
+        const skillMatch = source.match(/--skill\s+(\S+)/);
+        const skillName = skillMatch ? skillMatch[1] : null;
+        const id = source.replace(/--skill\s+\S+/, "").trim();
+
         invoke("install_skill", {
-            id: source,
+            id,
+            skill: skillName,
             global: installConfig.installGlobal,
             agents: installConfig.targetAgents,
             autoConfirm: installConfig.autoConfirm,
@@ -114,7 +120,7 @@ export default function Discover() {
                             value={installInput}
                             onChange={(e) => setInstallInput(e.target.value)}
                             onKeyDown={(e) => e.key === 'Enter' && handleInstall(installInput)}
-                            placeholder="Install skill (ID, URL, or local path)..."
+                            placeholder="Install skill (e.g. url --skill skill-name)..."
                             className="w-full h-10 pl-10 pr-4 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-700 placeholder:text-slate-400 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
                         />
                         <div className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400">
