@@ -7,7 +7,7 @@ fn greet(name: &str) -> String {
 use std::fs;
 
 mod source_manager;
-use source_manager::{save_skill_source, get_skill_source};
+use source_manager::{get_skill_source, save_skill_source};
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Skill {
     id: String,
@@ -21,12 +21,16 @@ pub struct Skill {
     downloads: Option<u32>,
     agent: String,
     is_symlink: bool,
-    source: Option<String>, // New field for original repository/source URL
+    source: Option<String>,
+    has_update: bool,
+    local_hash: Option<String>,
+    remote_hash: Option<String>,
+    last_updated: Option<String>,
 }
 
 // Map of Agent Name -> Relative Path from Home
 const AGENT_PATHS: &[(&str, &str)] = &[
-    ("global", ".agents/skills"),                 // Official global skills path
+    ("global", ".agents/skills"), // Official global skills path
     ("antigravity", ".gemini/antigravity/skills"), // Adjusted based on user input
     ("claude-code", ".claude/skills"),
     ("cursor", ".cursor/skills"),
@@ -79,7 +83,9 @@ fn get_local_skills() -> Result<Vec<Skill>, String> {
                                 for line in config_content.lines() {
                                     let trimmed = line.trim();
                                     if trimmed.starts_with("url = ") {
-                                        return Some(trimmed.trim_start_matches("url = ").to_string());
+                                        return Some(
+                                            trimmed.trim_start_matches("url = ").to_string(),
+                                        );
                                     }
                                 }
                             }
@@ -104,6 +110,48 @@ fn get_local_skills() -> Result<Vec<Skill>, String> {
                             .map(|l| l.replace("name:", "").trim().to_string())
                             .unwrap_or_else(|| skill_id.clone());
 
+                        let mut local_hash = None;
+                        let mut last_updated = None;
+
+                        if !is_symlink && path.join(".git").exists() {
+                            use std::process::Command;
+                            // Get local hash
+                            if let Ok(output) = Command::new("git")
+                                .args(&[
+                                    "-C",
+                                    &path.to_string_lossy(),
+                                    "rev-parse",
+                                    "--short",
+                                    "HEAD",
+                                ])
+                                .output()
+                            {
+                                if output.status.success() {
+                                    local_hash = Some(
+                                        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+                                    );
+                                }
+                            }
+                            // Get last commit date
+                            if let Ok(output) = Command::new("git")
+                                .args(&[
+                                    "-C",
+                                    &path.to_string_lossy(),
+                                    "log",
+                                    "-1",
+                                    "--format=%cd",
+                                    "--date=short",
+                                ])
+                                .output()
+                            {
+                                if output.status.success() {
+                                    last_updated = Some(
+                                        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+                                    );
+                                }
+                            }
+                        }
+
                         all_skills.push(Skill {
                             id: skill_id,
                             name,
@@ -115,8 +163,12 @@ fn get_local_skills() -> Result<Vec<Skill>, String> {
                             version: Some("1.0.0".to_string()),
                             downloads: None,
                             agent: agent_name.to_string(),
-                            is_symlink, // Populate new field
-                            source,     // New field for source URL
+                            is_symlink,
+                            source,
+                            has_update: false,
+                            local_hash,
+                            remote_hash: None,
+                            last_updated,
                         });
                     }
                 }
@@ -175,7 +227,7 @@ async fn install_skill(
 
     // Convert to strict &str for Command
     let args_str: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    
+
     println!("[INSTALL] Full command: npx {}", args.join(" "));
     println!("[INSTALL] Spawning process...");
 
@@ -201,7 +253,10 @@ async fn install_skill(
             format!("Failed to spawn npx: {}", e)
         })?;
 
-    println!("[INSTALL] Process spawned successfully, PID: {:?}", child.id());
+    println!(
+        "[INSTALL] Process spawned successfully, PID: {:?}",
+        child.id()
+    );
 
     {
         // Fallback input if flags don't cover everything
@@ -212,18 +267,19 @@ async fn install_skill(
     }
 
     println!("[INSTALL] Waiting for process to complete...");
-    let output = child
-        .wait_with_output()
-        .map_err(|e| {
-            println!("[INSTALL] ERROR: Failed to read output: {}", e);
-            format!("Failed to read output: {}", e)
-        })?;
+    let output = child.wait_with_output().map_err(|e| {
+        println!("[INSTALL] ERROR: Failed to read output: {}", e);
+        format!("Failed to read output: {}", e)
+    })?;
 
-    println!("[INSTALL] Process completed with status: {:?}", output.status);
-    
+    println!(
+        "[INSTALL] Process completed with status: {:?}",
+        output.status
+    );
+
     let stdout_str = String::from_utf8_lossy(&output.stdout);
     let stderr_str = String::from_utf8_lossy(&output.stderr);
-    
+
     if !stdout_str.is_empty() {
         println!("[INSTALL] STDOUT:\n{}", stdout_str);
     }
@@ -233,25 +289,26 @@ async fn install_skill(
 
     if output.status.success() {
         println!("[INSTALL] SUCCESS: Installed {}", id);
-        
+
         // Parse output to find installed skill IDs and save source
         // Output format example: ~\.agents\skills\agent-browser
         // Use regex to capture skill name
         let re = regex::Regex::new(r"[~\\]\.agents[\\/]skills[\\/]([a-zA-Z0-9_-]+)").unwrap();
         // Also try to match the source URL from "Source: <url>" lines if present, but user input `id` is usually the source URL
-        // If `id` starts with http, we use it as source. 
+        // If `id` starts with http, we use it as source.
         // If `id` is just a name and `skill` is none, `id` is the source.
-        
+
         // Strategy: Use the input `id` as the source URL/command for all found skills.
         // This works perfectly for bulk install or single install.
-        
-        let mut installed_skills: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        let mut installed_skills: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for cap in re.captures_iter(&stdout_str) {
             if let Some(skill_id) = cap.get(1) {
                 installed_skills.insert(skill_id.as_str().to_string());
             }
         }
-        
+
         // Also check if user provided a specific skill name via --skill
         if let Some(ref specific_skill) = skill {
             installed_skills.insert(specific_skill.clone());
@@ -259,9 +316,12 @@ async fn install_skill(
 
         // If no skills found in output but success, and `id` looks like a repo, maybe we can assume?
         // But npx usually prints paths.
-        
-        println!("[INSTALL] Identified installed skills: {:?}", installed_skills);
-        
+
+        println!(
+            "[INSTALL] Identified installed skills: {:?}",
+            installed_skills
+        );
+
         for skill_id in installed_skills {
             save_skill_source(&skill_id, &id);
             println!("[INSTALL] Saved source for {}: {}", skill_id, id);
@@ -363,7 +423,7 @@ async fn remove_skills(
 
     // Convert to strict &str for Command
     let args_str: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    
+
     println!("[REMOVE_SKILLS] Full command: npx {}", args.join(" "));
     println!("[REMOVE_SKILLS] Spawning process...");
 
@@ -389,7 +449,10 @@ async fn remove_skills(
             format!("Failed to spawn npx: {}", e)
         })?;
 
-    println!("[REMOVE_SKILLS] Process spawned successfully, PID: {:?}", child.id());
+    println!(
+        "[REMOVE_SKILLS] Process spawned successfully, PID: {:?}",
+        child.id()
+    );
 
     {
         // Fallback input if flags don't cover everything
@@ -400,18 +463,19 @@ async fn remove_skills(
     }
 
     println!("[REMOVE_SKILLS] Waiting for process to complete...");
-    let output = child
-        .wait_with_output()
-        .map_err(|e| {
-            println!("[REMOVE_SKILLS] ERROR: Failed to read output: {}", e);
-            format!("Failed to read output: {}", e)
-        })?;
+    let output = child.wait_with_output().map_err(|e| {
+        println!("[REMOVE_SKILLS] ERROR: Failed to read output: {}", e);
+        format!("Failed to read output: {}", e)
+    })?;
 
-    println!("[REMOVE_SKILLS] Process completed with status: {:?}", output.status);
-    
+    println!(
+        "[REMOVE_SKILLS] Process completed with status: {:?}",
+        output.status
+    );
+
     let stdout_str = String::from_utf8_lossy(&output.stdout);
     let stderr_str = String::from_utf8_lossy(&output.stderr);
-    
+
     if !stdout_str.is_empty() {
         println!("[REMOVE_SKILLS] STDOUT:\n{}", stdout_str);
     }
@@ -428,7 +492,6 @@ async fn remove_skills(
     }
 }
 
-
 #[derive(Debug, serde::Serialize)]
 pub struct GlobalSkillInfo {
     id: String,
@@ -442,7 +505,7 @@ pub struct GlobalSkillInfo {
 fn list_global_skills() -> Result<Vec<GlobalSkillInfo>, String> {
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     let global_skills_path = home_dir.join(".agents").join("skills");
-    
+
     if !global_skills_path.exists() {
         return Ok(Vec::new());
     }
@@ -458,12 +521,12 @@ fn list_global_skills() -> Result<Vec<GlobalSkillInfo>, String> {
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string();
-                
+
                 let skill_md_path = path.join("SKILL.md");
-                
+
                 if skill_md_path.exists() {
                     let content = fs::read_to_string(&skill_md_path).unwrap_or_default();
-                    
+
                     let description = content
                         .lines()
                         .find(|l| l.starts_with("description:"))
@@ -504,11 +567,19 @@ fn list_global_skills() -> Result<Vec<GlobalSkillInfo>, String> {
                         if git_config_path.exists() {
                             use std::process::Command;
                             let output = Command::new("git")
-                                .args(&["-C", &path.to_string_lossy(), "remote", "get-url", "origin"])
+                                .args(&[
+                                    "-C",
+                                    &path.to_string_lossy(),
+                                    "remote",
+                                    "get-url",
+                                    "origin",
+                                ])
                                 .output();
                             if let Ok(out) = output {
                                 if out.status.success() {
-                                    last_skill.source = Some(String::from_utf8_lossy(&out.stdout).trim().to_string());
+                                    last_skill.source = Some(
+                                        String::from_utf8_lossy(&out.stdout).trim().to_string(),
+                                    );
                                 }
                             }
                         }
@@ -553,11 +624,14 @@ async fn remove_global_skill(id: String) -> Result<String, String> {
             format!("Failed to spawn npx: {}", e)
         })?;
 
-    println!("[REMOVE_GLOBAL] Process completed with status: {:?}", output.status);
-    
+    println!(
+        "[REMOVE_GLOBAL] Process completed with status: {:?}",
+        output.status
+    );
+
     let stdout_str = String::from_utf8_lossy(&output.stdout);
     let stderr_str = String::from_utf8_lossy(&output.stderr);
-    
+
     if !stdout_str.is_empty() {
         println!("[REMOVE_GLOBAL] STDOUT:\n{}", stdout_str);
     }
@@ -574,6 +648,161 @@ async fn remove_global_skill(id: String) -> Result<String, String> {
     }
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct SkillConfigResponse {
+    current_config: String,
+    documentation: Option<String>,
+}
+
+#[tauri::command]
+async fn get_skill_config(id: String, agent: String) -> Result<SkillConfigResponse, String> {
+    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
+    let agent_path = AGENT_PATHS
+        .iter()
+        .find(|(name, _)| name == &agent)
+        .map(|(_, path)| path)
+        .ok_or_else(|| format!("Unknown agent: {}", agent))?;
+
+    let skill_dir = home_dir.join(agent_path).join(&id);
+    let config_path = skill_dir.join("skill.config.json");
+    let skill_md_path = skill_dir.join("SKILL.md");
+
+    let current_config = if config_path.exists() {
+        fs::read_to_string(config_path).map_err(|e| e.to_string())?
+    } else {
+        "{}".to_string()
+    };
+
+    let documentation = if skill_md_path.exists() {
+        fs::read_to_string(skill_md_path).ok()
+    } else {
+        None
+    };
+
+    Ok(SkillConfigResponse {
+        current_config,
+        documentation,
+    })
+}
+
+#[tauri::command]
+fn save_skill_config(id: String, agent: String, config: String) -> Result<(), String> {
+    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
+    let agent_path = AGENT_PATHS
+        .iter()
+        .find(|(name, _)| name == &agent)
+        .map(|(_, path)| path)
+        .ok_or_else(|| format!("Unknown agent: {}", agent))?;
+
+    let skill_dir = home_dir.join(agent_path).join(id);
+    if !skill_dir.exists() {
+        return Err("Skill directory does not exist".to_string());
+    }
+
+    let config_path = skill_dir.join("skill.config.json");
+    fs::write(config_path, config).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SkillUpdateInfo {
+    id: String,
+    remote_hash: String,
+}
+
+#[tauri::command]
+async fn check_skill_updates(skills: Vec<Skill>) -> Result<Vec<SkillUpdateInfo>, String> {
+    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
+    let mut update_results = Vec::new();
+
+    for skill in skills {
+        let agent_path = match AGENT_PATHS.iter().find(|(name, _)| name == &skill.agent) {
+            Some((_, path)) => path,
+            None => continue,
+        };
+
+        let skill_dir = home_dir.join(agent_path).join(&skill.id);
+        if !skill_dir.exists() {
+            continue;
+        }
+
+        // Only check for non-symlinked git repos for now
+        if !skill.is_symlink && skill_dir.join(".git").exists() {
+            use std::process::Command;
+
+            // Fetch latest from remote
+            let git_fetch = Command::new("git")
+                .args(&["-C", &skill_dir.to_string_lossy(), "fetch"])
+                .status();
+
+            if git_fetch.is_ok() && git_fetch.unwrap().success() {
+                // Compare local HEAD with remote tracking branch
+                let local_hash = Command::new("git")
+                    .args(&["-C", &skill_dir.to_string_lossy(), "rev-parse", "HEAD"])
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_default();
+
+                // Try to get remote hash. Try @{u} first, then origin/main as fallback.
+                let mut remote_rev_cmd = Command::new("git");
+                remote_rev_cmd.args(&["-C", &skill_dir.to_string_lossy(), "rev-parse", "@{u}"]);
+
+                let mut remote_output = remote_rev_cmd.output();
+
+                // Fallback to origin/main if @{u} fails
+                if remote_output.is_err() || !remote_output.as_ref().unwrap().status.success() {
+                    let mut fallback_cmd = Command::new("git");
+                    fallback_cmd.args(&[
+                        "-C",
+                        &skill_dir.to_string_lossy(),
+                        "rev-parse",
+                        "origin/main",
+                    ]);
+                    remote_output = fallback_cmd.output();
+                }
+
+                let remote_hash = remote_output
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_default();
+
+                if !local_hash.is_empty() && !remote_hash.is_empty() && local_hash != remote_hash {
+                    update_results.push(SkillUpdateInfo {
+                        id: skill.id,
+                        remote_hash: remote_hash.chars().take(7).collect(), // Short hash safely
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(update_results)
+}
+
+#[tauri::command]
+async fn update_skill_repo(id: String, agent: String) -> Result<String, String> {
+    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
+    let agent_path = AGENT_PATHS
+        .iter()
+        .find(|(name, _)| name == &agent)
+        .map(|(_, path)| path)
+        .ok_or_else(|| format!("Unknown agent: {}", agent))?;
+
+    let skill_dir = home_dir.join(agent_path).join(&id);
+    if !skill_dir.exists() {
+        return Err("Skill directory does not exist".to_string());
+    }
+
+    use std::process::Command;
+    let output = Command::new("git")
+        .args(&["-C", &skill_dir.to_string_lossy(), "pull"])
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -586,7 +815,11 @@ pub fn run() {
             uninstall_skill,
             remove_skills,
             list_global_skills,
-            remove_global_skill
+            remove_global_skill,
+            get_skill_config,
+            save_skill_config,
+            check_skill_updates,
+            update_skill_repo
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

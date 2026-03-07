@@ -14,6 +14,10 @@ interface AppState {
     setView: (view: View) => void
     installConfig: InstallConfig
     setInstallConfig: (config: Partial<InstallConfig>) => void
+    skillUpdates: Record<string, { remoteHash: string }>
+    setSkillUpdates: (updates: { id: string, remoteHash: string }[]) => void
+    lastCheckedMap: Record<string, string>
+    updateLastChecked: (ids: string[]) => void
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -27,5 +31,19 @@ export const useAppStore = create<AppState>((set) => ({
     },
     setInstallConfig: (config) => set((state) => ({
         installConfig: { ...state.installConfig, ...config }
+    })),
+    skillUpdates: {},
+    setSkillUpdates: (updates) => set({
+        skillUpdates: updates.reduce((acc, update) => ({
+            ...acc,
+            [update.id]: { remoteHash: update.remoteHash }
+        }), {})
+    }),
+    lastCheckedMap: {},
+    updateLastChecked: (ids) => set((state) => ({
+        lastCheckedMap: {
+            ...state.lastCheckedMap,
+            ...ids.reduce((acc, id) => ({ ...acc, [id]: new Date().toLocaleTimeString() }), {})
+        }
     })),
 }))

@@ -1,4 +1,4 @@
-import { RotateCw, Download, Trash2 } from "lucide-react";
+import { RotateCw, Download, Trash2, Sparkles } from "lucide-react";
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store/app-store";
@@ -13,17 +13,51 @@ export default function Discover() {
     const [installing, setInstalling] = useState<string | null>(null);
     const [skills, setSkills] = useState<Skill[]>([]);
 
-    const { installConfig } = useAppStore();
-
     const [selectedAgent, setSelectedAgent] = useState<string>("All");
     const [selectedSkills, setSelectedSkills] = useState<Set<string>>(new Set());
+    const [checkingUpdates, setCheckingUpdates] = useState(false);
+    const [updateFeedback, setUpdateFeedback] = useState<string | null>(null);
+
+    const { installConfig, setSkillUpdates, skillUpdates, updateLastChecked } = useAppStore();
 
     const loadSkills = () => {
         setLoading(true);
         invoke<Skill[]>("get_local_skills")
-            .then(setSkills)
+            .then((loadedSkills) => {
+                setSkills(loadedSkills);
+                // Proactively check updates for git-based skills
+                handleCheckUpdates(loadedSkills);
+            })
             .catch(console.error)
             .finally(() => setLoading(false));
+    };
+
+    const handleCheckUpdates = (skillsToCheck: Skill[], explicit = false) => {
+        if (checkingUpdates) return;
+        setCheckingUpdates(true);
+        if (explicit) setUpdateFeedback("正在检查更新...");
+
+        invoke<{ id: string, remoteHash: string }[]>("check_skill_updates", { skills: skillsToCheck })
+            .then((updates) => {
+                setSkillUpdates(updates);
+                updateLastChecked(skillsToCheck.map(s => s.id));
+                if (explicit) {
+                    if (updates.length > 0) {
+                        setUpdateFeedback(`发现 ${updates.length} 个技能有更新！`);
+                    } else {
+                        setUpdateFeedback("所有技能已是最新版本");
+                    }
+                    setTimeout(() => setUpdateFeedback(null), 3000);
+                }
+            })
+            .catch((err) => {
+                console.error(err);
+                if (explicit) {
+                    setUpdateFeedback("检查更新失败: " + err);
+                    setTimeout(() => setUpdateFeedback(null), 5000);
+                }
+            })
+            .finally(() => setCheckingUpdates(false));
     };
 
     useEffect(() => {
@@ -62,7 +96,15 @@ export default function Discover() {
         // 解析 --skill 参数
         const skillMatch = source.match(/--skill\s+(\S+)/);
         const skillName = skillMatch ? skillMatch[1] : null;
+
+        // 解析 ID (URL 或包名)
         const id = source.replace(/--skill\s+\S+/, "").trim();
+
+        if (!id) {
+            alert("请输入有效的安装地址或 ID");
+            setInstalling(null);
+            return;
+        }
 
         invoke("install_skill", {
             id,
@@ -73,15 +115,15 @@ export default function Discover() {
             installMode: installConfig.installMode
         })
             .then(() => {
-                console.log("Installed!");
+                alert("安装成功！");
                 setInstalling(null);
                 setInstallInput("");
-                // Refresh list
-                return invoke<Skill[]>("get_local_skills");
+                // 刷新列表
+                loadSkills();
             })
-            .then(setSkills)
             .catch((err) => {
                 console.error(err);
+                alert("安装失败: " + err);
                 setInstalling(null);
             });
     };
@@ -191,14 +233,14 @@ export default function Discover() {
         // We will process them one by one or construct a command that handles multiple with mixed global/local
         // For simplicity and safety with the current backend command, we'll loop or handle the most common case.
         // Actually, the new remove_skills command supports a list of IDs.
-        
+
         // But we need to know if they are global.
         // In "Global" view, they are all global.
         // In "All" view, we'd need to check each one.
-        
+
         const isGlobal = selectedAgent === "global";
         const targetAgents = selectedAgent === "All" ? [] : [selectedAgent].filter(a => a !== "global");
-        
+
         invoke("remove_skills", {
             skillIds: skillList,
             global: isGlobal,
@@ -247,9 +289,32 @@ export default function Discover() {
                         onClick={loadSkills}
                         disabled={loading}
                         className="h-10 w-10 bg-white border border-slate-200 rounded-lg flex items-center justify-center text-slate-400 hover:text-blue-600 hover:border-blue-100 transition-all shadow-sm"
+                        title="Refresh List"
                     >
-                        <RotateCw size={18} className={cn(loading && "animate-spin")} />
+                        <RotateCw size={18} className={cn(loading && !checkingUpdates && "animate-spin")} />
                     </button>
+                    <button
+                        onClick={() => handleCheckUpdates(skills, true)}
+                        disabled={checkingUpdates || skills.length === 0}
+                        className={cn(
+                            "h-10 px-4 border rounded-xl text-xs font-bold transition-all flex items-center gap-2 shadow-sm",
+                            checkingUpdates
+                                ? "bg-slate-50 border-slate-200 text-slate-400 cursor-wait"
+                                : Object.keys(skillUpdates).length > 0
+                                    ? "bg-blue-50 border-blue-200 text-blue-600 hover:bg-blue-100"
+                                    : "bg-white border-slate-200 text-slate-600 hover:border-blue-100 hover:text-blue-600"
+                        )}
+                        title="Check for updates in Git skills"
+                    >
+                        <Sparkles size={16} className={cn(checkingUpdates && "animate-spin")} />
+                        {checkingUpdates ? "Checking..." : Object.keys(skillUpdates).length > 0 ? `发现 ${Object.keys(skillUpdates).length} 个更新` : "检查更新"}
+                    </button>
+                    {updateFeedback && (
+                        <div className="absolute top-20 right-8 bg-slate-800 text-white text-xs font-bold px-4 py-2 rounded-xl shadow-lg border border-slate-700 animate-in slide-in-from-right-4 duration-300 z-50 flex items-center gap-2">
+                            <Sparkles size={14} className="text-blue-400" />
+                            {updateFeedback}
+                        </div>
+                    )}
                 </div>
 
                 <div className="flex items-center justify-between mb-2">
@@ -338,6 +403,7 @@ export default function Discover() {
                             skillGroup={group}
                             onInstall={handleInstall}
                             onUninstall={handleUninstall}
+                            onRefresh={loadSkills}
                             isInstalling={installing === group.id}
                             onSelect={toggleSkillSelection}
                             isSelected={selectedSkills.has(group.id)}
